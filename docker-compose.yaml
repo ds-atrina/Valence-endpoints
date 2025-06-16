@@ -1,0 +1,14 @@
+services:
+  fastapi-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pharma-valence-api
+    ports:
+      - "8001:8001"         # Maps host port 8001 to container port 8001
+    volumes:
+      - .:/app              # Mount project files
+      - ./accounts_key.json:/app/accounts_key.json  # Mount service account key file
+    env_file:
+      - .env                # Load environment variables
+    restart: unless-stopped

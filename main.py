@@ -8,6 +8,10 @@ import uuid, io, datetime, urllib.parse, os, json
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from bson import ObjectId
+from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
 
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "accounts_key.json"
 
@@ -22,13 +26,18 @@ app.add_middleware(
 
 storage_client = storage.Client()
 publisher = pubsub_v1.PublisherClient()
-PUBSUB_TOPIC = "projects/pharmagpt/topics/audio-process-trigger"
-BUCKET_NAME = "valence_audios"
+PUBSUB_TOPIC = os.getenv("PUBSUB_TOPIC")
+BUCKET_NAME = os.getenv("BUCKET_NAME")
+url=os.getenv("URL")
+port=os.getenv("MONGO_PORT")
+db_name = os.getenv("DB_NAME")
+collection_name = os.getenv("COLLECTION_NAME")
 
-user = urllib.parse.quote_plus("admin")
-pw   = urllib.parse.quote_plus("ValencePharma@123")
-MONGO_URI = f"mongodb://{user}:{pw}@34.47.177.112:27017/transcriptDB?authSource=admin"
-collection = MongoClient(MONGO_URI)["transcriptDB"]["transcript_records"]
+user = urllib.parse.quote_plus(os.getenv("USERNAME"))
+pw   = urllib.parse.quote_plus(os.getenv("PASSWORD"))
+ 
+MONGO_URI = f"mongodb://{user}:{pw}@{url}:{port}/{db_name}?authSource=admin"
+collection = MongoClient(MONGO_URI)[db_name][collection_name]
 
 MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -140,7 +149,6 @@ async def upload_audio(
     return {"message": "Success", "gcs_uri": gcs_uri, "record_id": record_id }
 
 
-# --- Pydantic models ---
 class RecordListItem(BaseModel):
     id: str = Field(..., alias="_id")
     date: str
@@ -148,27 +156,74 @@ class RecordListItem(BaseModel):
     duration: str
     status: str
     region: str
-
-    class Config:
-        allow_population_by_field_name = True
+    model_config = {
+        "validate_by_name": True
+    }
 
 class RecordDetail(BaseModel):
     id: str = Field(..., alias="_id")
     transcript: str
     translation: str
+    model_config = {
+        "validate_by_name": True
+    }
 
-    class Config:
-        allow_population_by_field_name = True
+class RecordSummary(BaseModel):
+    total: int
+    transcript_completed: int
+    translation_completed: int
+    insight_completed: int
 
 def serialize_id(doc):
     doc["_id"] = str(doc["_id"])
     return doc
 
+
+
+
+@app.get("/summary", response_model=RecordSummary)
+def get_summary(
+    status: Optional[List[str]] = Query(None),
+    product_name: Optional[List[str]] = Query(None),
+    region: Optional[List[str]] = Query(None),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD")
+):
+    filt = {}
+    print("hello1")
+    if status and "All" not in status:
+        filt["status"] = {"$in": status}
+    if product_name and "All" not in product_name:
+        filt["product_name"] = {"$in": product_name}
+    if region and "All" not in region:
+        filt["region"] = {"$in": region}
+    print("hello2")
+    if from_date or to_date:
+        try:
+            date_filter = {}
+            if from_date:
+                date_filter["$gte"] = datetime.strptime(from_date, "%Y-%m-%d").date().isoformat()
+            if to_date:
+                date_filter["$lte"] = datetime.strptime(to_date, "%Y-%m-%d").date().isoformat()
+            filt["date"] = date_filter
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+    print("hello3")
+    return RecordSummary(
+        total=collection.count_documents(filt),
+        transcript_completed=collection.count_documents({**filt, "transcript_status": "Completed"}),
+        translation_completed=collection.count_documents({**filt, "translation_status": "Completed"}),
+        insight_completed=collection.count_documents({**filt, "insight_status": "Completed"})
+    )
+
+
 @app.get("/records", response_model=List[RecordListItem])
 def list_records(
     status: Optional[List[str]]        = Query(None, description="Processing, Completed, Failed, All"),
     product_name: Optional[List[str]]  = Query(None, description="All, Osopaan-D, Virilex"),
-    region: Optional[List[str]]        = Query(None, description="All, Maharashtra, Punjab, Rajasthan")
+    region: Optional[List[str]]        = Query(None, description="All, Maharashtra, Punjab, Rajasthan"),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD"),
+    to_date: Optional[str] = Query(None, description="YYYY-MM-DD")
 ):
     filt = {}
     # status filter
@@ -181,6 +236,17 @@ def list_records(
     if region and "All" not in region:
         filt["region"] = {"$in": region}
 
+    if from_date or to_date:
+        try:
+            date_filter = {}
+            if from_date:
+                date_filter["$gte"] = datetime.strptime(from_date, "%Y-%m-%d").date().isoformat()
+            if to_date:
+                date_filter["$lte"] = datetime.strptime(to_date, "%Y-%m-%d").date().isoformat()
+            filt["date"] = date_filter
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+
     docs = collection.find(filt, {
         "_id": 1,
         "date": 1,
@@ -191,7 +257,6 @@ def list_records(
     }).sort("upload_timestamp", -1)
 
     return [serialize_id(doc) for doc in docs]
-
 
 
 @app.get("/records/{record_id}", response_model=RecordDetail)

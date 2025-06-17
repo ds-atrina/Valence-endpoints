@@ -121,7 +121,7 @@ async def upload_audio(
         "file_name": file.filename,
         "file_size": len(contents),
         "duration": duration_mmss,
-        "upload_timestamp": datetime.datetime.utcnow(),
+        "upload_timestamp": datetime.utcnow(),
         "region": region,
         "product_name": product_name,
         "date": date,

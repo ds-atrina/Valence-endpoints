@@ -19,7 +19,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     # allow_origins=["*"],
-    allow_origins=["https://dev-pharma-ai.valenceai.in"],
+    allow_origins=["http://localhost:3000", "https://dev-pharma-ai.valenceai.in"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -163,6 +163,7 @@ class RecordListItem(BaseModel):
 
 class RecordDetail(BaseModel):
     id: str = Field(..., alias="_id")
+    audio_url: str
     transcript: str
     translation: str
     model_config = {
@@ -191,14 +192,19 @@ def get_summary(
     to_date: Optional[str] = Query(None, description="YYYY-MM-DD")
 ):
     filt = {}
-    print("hello1")
-    if status and "All" not in status:
+    # if status and "All" not in status:
+    #     filt["status"] = {"$in": status}
+    # if product_name and "All" not in product_name:
+    #     filt["product_name"] = {"$in": product_name}
+    # if region and "All" not in region:
+    #     filt["region"] = {"$in": region}
+    if status and not any(s.lower() == "all" for s in status):
         filt["status"] = {"$in": status}
-    if product_name and "All" not in product_name:
+    if product_name and not any(p.lower() == "all" for p in product_name):
         filt["product_name"] = {"$in": product_name}
-    if region and "All" not in region:
+    if region and not any(r.lower() == "all" for r in region):
         filt["region"] = {"$in": region}
-    print("hello2")
+
     if from_date or to_date:
         try:
             date_filter = {}
@@ -209,7 +215,8 @@ def get_summary(
             filt["date"] = date_filter
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
-    print("hello3")
+        
+    print("Filter for summary:", filt)
     return RecordSummary(
         total=collection.count_documents(filt),
         transcript_completed=collection.count_documents({**filt, "transcript_status": "Completed"}),
@@ -248,6 +255,7 @@ def list_records(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
 
+    print("Filter for records:", filt)
     docs = collection.find(filt, {
         "_id": 1,
         "date": 1,
@@ -270,5 +278,6 @@ def get_record(record_id: str):
     doc = collection.find_one({"_id": oid}, {"audio_url":1, "transcript": 1, "translation": 1})
     if not doc:
         raise HTTPException(404, "Record not found")
+    print("Final response doc:", doc)
 
     return serialize_id(doc)

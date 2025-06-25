@@ -3,3 +3,4 @@ accounts_key.json
 .env__pycache__/
 __pycache__/
 *.pyc
+.env

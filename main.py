@@ -1,5 +1,5 @@
 import hashlib
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, status, Query
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, status, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydub import AudioSegment
 from pymongo import MongoClient
@@ -10,6 +10,8 @@ from typing import List, Optional
 from bson import ObjectId
 from datetime import datetime
 from dotenv import load_dotenv
+from jose import jwt, JWTError
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 load_dotenv()
 
@@ -33,6 +35,9 @@ url=os.getenv("URL")
 port=os.getenv("MONGO_PORT")
 db_name = os.getenv("DB_NAME")
 collection_name = os.getenv("COLLECTION_NAME")
+SECRET_KEY = os.getenv("NEXTAUTH_SECRET")
+ALGORITHM = "HS256"
+auth_scheme = HTTPBearer()
 
 user = urllib.parse.quote_plus(os.getenv("USERNAME"))
 pw   = urllib.parse.quote_plus(os.getenv("PASSWORD"))
@@ -42,6 +47,18 @@ collection = MongoClient(MONGO_URI)[db_name][collection_name]
 
 MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(auth_scheme)):
+    token = credentials.credentials
+    try:
+        print("Incoming token:", token)
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        print("Decoded payload:", payload)
+        email = payload.get("email")
+        if email is None:
+            raise HTTPException(status_code=401, detail="Email missing in token")
+        return email
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 def upload_with_retries(bucket, blob_name, buffer, retries=3):
     for attempt in range(1, retries+1):
@@ -59,7 +76,8 @@ async def upload_audio(
     file: UploadFile = File(...),
     region: str = Form(...),
     product_name: str = Form(...),
-    date: str = Form(...)
+    date: str = Form(...),
+    user_email: str = Depends(verify_token)
 ):
     # 1. True size check
     contents = await file.read()
@@ -133,6 +151,7 @@ async def upload_audio(
         "transcript_status": "Processing",
         "translation_status": "Processing",
         "insights_status": "Processing",
+        "user_email": user_email
     }
     res = collection.insert_one(doc)
     record_id = str(res.inserted_id)
@@ -227,6 +246,7 @@ def get_summary(
 
 @app.get("/records", response_model=List[RecordListItem])
 def list_records(
+    user_email: Optional[str] = Query(None),
     status: Optional[List[str]]        = Query(None, description="Processing, Completed, Failed, All"),
     product_name: Optional[List[str]]  = Query(None, description="All, Osopaan-D, Virilex"),
     region: Optional[List[str]]        = Query(None, description="All, Maharashtra, Punjab, Rajasthan"),
@@ -234,6 +254,8 @@ def list_records(
     to_date: Optional[str] = Query(None, description="YYYY-MM-DD")
 ):
     filt = {}
+    if user_email:
+        filt["user_email"] = user_email
     # status filter
     if status and "All" not in status:
         filt["status"] = {"$in": status}
@@ -262,8 +284,9 @@ def list_records(
         "product_name": 1,
         "duration": 1,
         "status": 1,
-        "region": 1
+        "region": 1,
     }).sort("upload_timestamp", -1)
+
 
     return [serialize_id(doc) for doc in docs]
 

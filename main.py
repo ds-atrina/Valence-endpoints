@@ -240,7 +240,7 @@ def get_summary(
         total=collection.count_documents(filt),
         transcript_completed=collection.count_documents({**filt, "transcript_status": "Completed"}),
         translation_completed=collection.count_documents({**filt, "translation_status": "Completed"}),
-        insight_completed=collection.count_documents({**filt, "insight_status": "Completed"})
+        insight_completed=collection.count_documents({**filt, "insights_status": "Completed"})
     )
 
 

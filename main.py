@@ -12,6 +12,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 from jose import jwt, JWTError
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from typing import List, Dict, Any
 
 load_dotenv()
 
@@ -44,6 +45,8 @@ pw   = urllib.parse.quote_plus(os.getenv("PASSWORD"))
  
 MONGO_URI = f"mongodb://{user}:{pw}@{url}:{port}/{db_name}?authSource=admin"
 collection = MongoClient(MONGO_URI)[db_name][collection_name]
+insights_col = MongoClient(MONGO_URI)[db_name]["insights_records"]
+faq_col = MongoClient(MONGO_URI)[db_name]["faq_records"]
 
 MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -304,3 +307,94 @@ def get_record(record_id: str):
     print("Final response doc:", doc)
 
     return serialize_id(doc)
+
+
+class Insight(BaseModel):
+    product: str
+    theme: str
+    region: str
+    occurrence: int
+    summary: str
+    insight_id: str
+
+
+@app.get(
+    "/insights",
+    response_model=List[Insight],
+    summary="Get insights by product + region with occurrence > min_occurrence"
+)
+def get_insights(
+    product: str = Query(..., examples=["Virilex"]),
+    region: str = Query(..., examples=["Delhi"]),
+    min_occurrence: int = Query(..., ge=1, examples=[3])
+):
+    """
+    Return all documents for the given **product** and **region**
+    whose `occurrence` value is **strictly greater than** `min_occurrence`.
+    """
+    mongo_filter = {
+        "product": product,
+        "region": region,
+        "occurrence": {"$gt": min_occurrence}     # $gt == “greater than” :contentReference[oaicite:0]{index=0}
+    }
+
+    # Projection excludes _id to keep response clean
+    cursor = insights_col.find(mongo_filter, {"_id": 0})
+    results = list(cursor)
+
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail="No insights matched your filter."
+        )
+
+    return results
+
+
+
+@app.get(
+    "/canonical_questions",
+    summary="Get canonical questions by product/region",
+)
+def get_canonical_questions(
+    product: str = Query(..., examples=["Zymora-AP"]),          # FastAPI turns query-string into typed vars :contentReference[oaicite:1]{index=1}
+    region:  str = Query(..., examples=["All"])
+) -> List[Dict[str, Any]]:
+    """
+    * **region = All** → `[{'canonical_question': str, 'occurrences': int}, ...]`
+    * **region = <city>** → `[{'canonical_question': str,
+                               'region_count': int,
+                               'occurrences' : int}, ...]`
+    """
+    base = {"product": product}
+
+    # ── Case 1 : aggregate across all regions ────────────────────────────
+    if region.lower() == "all":
+        cursor = faq_col.find(
+            base,
+            {"_id": 0, "canonical_question": 1, "occurrences": 1}  # simple projection
+        )
+        results = list(cursor)
+        if not results:
+            raise HTTPException(404, "No matching questions.")
+        return results
+
+    # ── Case 2 : filter for a single region ──────────────────────────────
+    region_field = f"region_counts.{region}"
+    base[region_field] = {"$gt": 0}                                  # only docs with >0 hits in that city :contentReference[oaicite:2]{index=2}
+
+    cursor = faq_col.find(
+        base,
+        {"_id": 0, "canonical_question": 1, "occurrences": 1, region_field: 1}
+    )
+
+    bucket: List[Dict[str, Any]] = []
+    for doc in cursor:
+        bucket.append({
+            "canonical_question": doc["canonical_question"],
+            "region_count"     : doc.get(region_field.split(".")[0], {}).get(region, 0)
+        })
+
+    if not bucket:
+        raise HTTPException(404, "No questions for that region.")
+    return bucket

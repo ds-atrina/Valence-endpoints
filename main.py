@@ -47,6 +47,7 @@ MONGO_URI = f"mongodb://{user}:{pw}@{url}:{port}/{db_name}?authSource=admin"
 collection = MongoClient(MONGO_URI)[db_name][collection_name]
 insights_col = MongoClient(MONGO_URI)[db_name]["insights_records"]
 faq_col = MongoClient(MONGO_URI)[db_name]["faq_records"]
+actions_col = MongoClient(MONGO_URI)[db_name]["actions_records"]
 
 MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
@@ -398,3 +399,15 @@ def get_canonical_questions(
     if not bucket:
         raise HTTPException(404, "No questions for that region.")
     return bucket
+
+
+
+@app.get("/actions")
+def get_actions(product: Optional[str] = Query(None, description="Filter by product name")):
+    query = {}
+    if product:
+        query["product"] = product
+
+    cursor = actions_col.find(query, {"_id": 0, "product": 1, "actions": 1})
+    results = list(cursor)
+    return {"data": results}

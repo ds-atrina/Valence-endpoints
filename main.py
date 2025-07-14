@@ -96,8 +96,8 @@ async def upload_audio(
     if not file.content_type.startswith("audio/"):
         raise HTTPException(400, "Must upload an audio file")
     ext = file.filename.rsplit(".",1)[-1].lower()
-    if ext not in {"mp3", "wav", "ogg"}:
-        raise HTTPException(400, "Only .mp3, .wav or .ogg allowed")
+    if ext not in {"mp3", "wav", "ogg", "m4a"}:
+        raise HTTPException(400, "Only .mp3, .wav, .ogg or .m4a allowed")
 
     # 3. Compute idempotency hash
     hasher = hashlib.sha256()

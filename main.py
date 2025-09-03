@@ -43,7 +43,7 @@ auth_scheme = HTTPBearer()
 user = urllib.parse.quote_plus(os.getenv("USERNAME"))
 pw   = urllib.parse.quote_plus(os.getenv("PASSWORD"))
  
-MONGO_URI = f"mongodb://{user}:{pw}@{url}:{port}/{db_name}?authSource=admin"
+MONGO_URI = f"mongodb://{user}:{pw}@{url}:{port}/{db_name}?authSource=admin&directConnection=true&serverSelectionTimeoutMS=5000"
 collection = MongoClient(MONGO_URI)[db_name][collection_name]
 insights_col = MongoClient(MONGO_URI)[db_name]["insights_records"]
 faq_col = MongoClient(MONGO_URI)[db_name]["faq_records"]
@@ -310,6 +310,15 @@ def get_record(record_id: str):
     return serialize_id(doc)
 
 
+# class Insight(BaseModel):
+#     product: str
+#     theme: str
+#     region: str
+#     occurrence: int
+#     summary: str
+#     insight_id: str
+
+
 class Insight(BaseModel):
     product: str
     theme: str
@@ -317,7 +326,9 @@ class Insight(BaseModel):
     occurrence: int
     summary: str
     insight_id: str
-
+    record_ids: Optional[List[str]] = None  # Add traceability
+    record_count: Optional[int] = None      # Add count of unique records
+    created_at: Optional[str] = None  
 
 @app.get(
     "/insights",
@@ -336,7 +347,7 @@ def get_insights(
     mongo_filter = {
         "product": product,
         "region": region,
-        "occurrence": {"$gt": min_occurrence}     # $gt == “greater than” :contentReference[oaicite:0]{index=0}
+        "occurrence": {"$gt": min_occurrence}    
     }
 
     # Projection excludes _id to keep response clean
@@ -353,53 +364,124 @@ def get_insights(
 
 
 
+# @app.get(
+#     "/canonical_questions",
+#     summary="Get canonical questions by product/region",
+# )
+# def get_canonical_questions(
+#     product: str = Query(..., examples=["Zymora-AP"]),          # FastAPI turns query-string into typed vars :contentReference[oaicite:1]{index=1}
+#     region:  str = Query(..., examples=["All"])
+# ) -> List[Dict[str, Any]]:
+#     """
+#     * **region = All** → `[{'canonical_question': str, 'occurrences': int}, ...]`
+#     * **region = <city>** → `[{'canonical_question': str,
+#                                'region_count': int,
+#                                'occurrences' : int}, ...]`
+#     """
+#     base = {"product": product}
+
+#     # ── Case 1 : aggregate across all regions ────────────────────────────
+#     if region.lower() == "all":
+#         cursor = faq_col.find(
+#             base,
+#             {"_id": 0, "canonical_question": 1, "occurrences": 1}  # simple projection
+#         )
+#         results = list(cursor)
+#         if not results:
+#             raise HTTPException(404, "No matching questions.")
+#         return results
+
+#     # ── Case 2 : filter for a single region ──────────────────────────────
+#     region_field = f"region_counts.{region}"
+#     base[region_field] = {"$gt": 0}                                  # only docs with >0 hits in that city :contentReference[oaicite:2]{index=2}
+
+#     cursor = faq_col.find(
+#         base,
+#         {"_id": 0, "canonical_question": 1, "occurrences": 1, region_field: 1}
+#     )
+
+#     bucket: List[Dict[str, Any]] = []
+#     for doc in cursor:
+#         bucket.append({
+#             "canonical_question": doc["canonical_question"],
+#             "region_count"     : doc.get(region_field.split(".")[0], {}).get(region, 0)
+#         })
+
+#     if not bucket:
+#         raise HTTPException(404, "No questions for that region.")
+#     return bucket
+
+
+
+
 @app.get(
     "/canonical_questions",
     summary="Get canonical questions by product/region",
 )
 def get_canonical_questions(
-    product: str = Query(..., examples=["Zymora-AP"]),          # FastAPI turns query-string into typed vars :contentReference[oaicite:1]{index=1}
-    region:  str = Query(..., examples=["All"])
+    product: str = Query(..., examples=["Zymora-AP"]),
+    region: str = Query(..., examples=["All"]),
+    include_transcripts: bool = Query(False, description="Include transcript IDs for traceability")
 ) -> List[Dict[str, Any]]:
     """
-    * **region = All** → `[{'canonical_question': str, 'occurrences': int}, ...]`
-    * **region = <city>** → `[{'canonical_question': str,
-                               'region_count': int,
-                               'occurrences' : int}, ...]`
+    * **region = All** → `[{'canonical_question': str, 'occurrences': int, 'transcript_ids': [...]}, ...]`
+    * **region = <city>** → `[{'canonical_question': str, 'region_count': int, 'occurrences': int, 'transcript_ids': [...]}, ...]`
     """
     base = {"product": product}
 
     # ── Case 1 : aggregate across all regions ────────────────────────────
     if region.lower() == "all":
-        cursor = faq_col.find(
-            base,
-            {"_id": 0, "canonical_question": 1, "occurrences": 1}  # simple projection
-        )
+        projection = {"_id": 0, "canonical_question": 1, "occurrences": 1}
+        if include_transcripts:
+            projection["region_transcripts"] = 1
+            
+        cursor = faq_col.find(base, projection)
         results = list(cursor)
+        
         if not results:
             raise HTTPException(404, "No matching questions.")
+            
+        # If transcripts requested, flatten all transcript IDs
+        if include_transcripts:
+            for result in results:
+                all_transcript_ids = []
+                region_transcripts = result.get("region_transcripts", {})
+                for region_name, transcript_list in region_transcripts.items():
+                    all_transcript_ids.extend(transcript_list)
+                result["transcript_ids"] = all_transcript_ids
+                # Remove the nested structure for cleaner response
+                result.pop("region_transcripts", None)
+                
         return results
 
     # ── Case 2 : filter for a single region ──────────────────────────────
     region_field = f"region_counts.{region}"
-    base[region_field] = {"$gt": 0}                                  # only docs with >0 hits in that city :contentReference[oaicite:2]{index=2}
+    base[region_field] = {"$gt": 0}
 
-    cursor = faq_col.find(
-        base,
-        {"_id": 0, "canonical_question": 1, "occurrences": 1, region_field: 1}
-    )
+    projection = {"_id": 0, "canonical_question": 1, "occurrences": 1, region_field: 1}
+    if include_transcripts:
+        projection["region_transcripts"] = 1
+
+    cursor = faq_col.find(base, projection)
 
     bucket: List[Dict[str, Any]] = []
     for doc in cursor:
-        bucket.append({
+        result = {
             "canonical_question": doc["canonical_question"],
-            "region_count"     : doc.get(region_field.split(".")[0], {}).get(region, 0)
-        })
+            "occurrences": doc["occurrences"],
+            "region_count": doc.get(region_field.split(".")[0], {}).get(region, 0)
+        }
+        
+        if include_transcripts:
+            # Get transcript IDs for the specific region
+            region_transcripts = doc.get("region_transcripts", {})
+            result["transcript_ids"] = region_transcripts.get(region, [])
+            
+        bucket.append(result)
 
     if not bucket:
         raise HTTPException(404, "No questions for that region.")
     return bucket
-
 
 
 @app.get("/actions")

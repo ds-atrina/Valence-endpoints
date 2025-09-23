@@ -22,7 +22,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     # allow_origins=["*"],
-    allow_origins=["http://localhost:3000", "https://dev-pharma-ai.valenceai.in", "https://mankind.valenceai.in","*", "https://dev-pharma.valenceai.in"],
+    allow_origins=["http://localhost:3000", "https://dev-pharma-ai.valenceai.in", "https://mankind.valenceai.in","*", "https://dev-pharma.valenceai.in", "https://app-pharma.valenceai.in"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
